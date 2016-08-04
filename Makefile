@@ -5,7 +5,7 @@
 
 OBJNAME = dualpipeline
 FILENAME = $(OBJNAME).c
-PKG_CONF_PATH = /usr/x86_64-linux-gnu/pkgconfig
+PKG_CONF_PATH = /usr/lib/x86_64-linux-gnu/pkgconfig
 
 .PHONY: make_rel make_dbg
 
