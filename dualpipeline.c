@@ -24,9 +24,9 @@ int motioncount, filecount;
 
 int main(int argc, char* argv[]){
 	GMainLoop *loop;	
-	GstElement *lowparse, *lowdec, *lowconvbefore, *lowconvafter, *lowfilter, *lowsink, *lowfsink;
+	GstElement *lowparse, *lowdec, *lowconvbefore, *lowconvafter,   *lowfsink;
 	GstElement *highparse, *highdec, *highsink, *highfsink;
-	GstElement *highfilter, *highfilesink;
+	GstElement *highfilter;
 	GstElement *q1, *tee, *q2;
 	GstPadTemplate *tee_src_template, *mux_src_template;
 
@@ -54,7 +54,6 @@ int main(int argc, char* argv[]){
 	lowconvbefore = gst_element_factory_make("videoconvert", NULL);
 	lowmcells = gst_element_factory_make("motioncells", "mcells");
 	lowconvafter = gst_element_factory_make("videoconvert", NULL);	
-	lowsink = gst_element_factory_make("xvimagesink", "lowsink");
 	lowfsink = gst_element_factory_make("fakesink", "lowfsink");
 
 	highsrc	= gst_element_factory_make("rtspsrc", "highsrc");
@@ -84,7 +83,7 @@ int main(int argc, char* argv[]){
     //set filter caps
     highfilter = gst_element_factory_make("capsfilter", NULL);
     gst_util_set_object_arg(G_OBJECT(highfilter), "caps",
-    	"video/x-raw,format=I420, framerate, GST_TYPE_FRACTION, 10, 1");
+    	"video/x-raw,format=I420, framerate, GST_TYPE_FRACTION, 5, 1");
 
     //add elements to bins and link all but src
     gst_bin_add_many(GST_BIN(lowrespipe), lowsrc, lowdepay, lowparse, lowdec, lowconvbefore, lowmcells, lowconvafter, lowfsink, NULL);
