@@ -4,15 +4,29 @@
 static void pad_added_handler(GstElement *el_src, GstPad *new_pad, gpointer user_data);
 static gboolean low_bus_cb (GstBus *bus, GstMessage *msg, gpointer user_data);
 static gboolean high_bus_cb (GstBus *bus, GstMessage *msg, gpointer user_data);
+static GstPadProbeReturn queue_data_probe_cb(GstPad *pad, GstPadProbeInfo *info, gpointer user_data);
 
 GstElement *lowsrc, *highsrc;
 GstElement *lowdepay, *highdepay;
 GstElement *lowrespipe, *highrespipe;
+GstElement *lowmcells;
+GstElement *curr_sink;
+GstElement *q3;
+GstElement *highconv;
+gulong queue_probe;
+GstPad *qpad;
+
+GstPad *tee_video2_pad, *tee_video_pad;
+GstPad *queue_video_pad, *queue_video2_pad;
+
+int motioncount;
 
 int main(int argc, char* argv[]){
 	GMainLoop *loop;	
-	GstElement *lowparse, *lowdec, *lowconvbefore, *lowmcells, *lowconvafter, *lowfilter, *lowsink;
-	GstElement *highparse, *highdec, *highconv, *highsink;
+	GstElement *lowparse, *lowdec, *lowconvbefore, *lowconvafter, *lowfilter, *lowsink, *lowfsink;
+	GstElement *highparse, *highdec, *highsink, *highfsink;
+	GstElement *q1, *tee, *q2;
+	GstPadTemplate *tee_src_template;
 
 	//check input parameters given
 	if(argc <=2){
@@ -40,13 +54,20 @@ int main(int argc, char* argv[]){
 	lowconvafter = gst_element_factory_make("videoconvert", NULL);
 	lowfilter = gst_element_factory_make("capsfilter", NULL);
 	lowsink = gst_element_factory_make("xvimagesink", "lowsink");
+	lowfsink = gst_element_factory_make("fakesink", "lowfsink");
 
 	highsrc	= gst_element_factory_make("rtspsrc", "highsrc");
 	highdepay = gst_element_factory_make("rtph264depay", NULL);
 	highparse = gst_element_factory_make("h264parse", NULL);
 	highdec = gst_element_factory_make("avdec_h264", NULL);	
 	highconv = gst_element_factory_make("videoconvert", NULL);
-	highsink = gst_element_factory_make("xvimagesink", "highsink");
+	highsink = gst_element_factory_make("fakesink", "highsink");
+	highfsink = gst_element_factory_make("fakesink", "highfsink");
+
+	q1 = gst_element_factory_make("queue", "q1");
+	q2 = gst_element_factory_make("queue", "q2");
+	q3 = gst_element_factory_make("queue", "q3");
+	tee = gst_element_factory_make("tee", NULL);
 
 	/*
 		rtspsrc cannot be linked straight away, connect to pad-added-handler
@@ -64,14 +85,51 @@ int main(int argc, char* argv[]){
 
     //add elements to bins and link all but src
     gst_bin_add_many(GST_BIN(lowrespipe), lowsrc, lowdepay, lowparse, lowdec, lowconvbefore, lowmcells, lowconvafter, lowsink, NULL);
-    gst_bin_add_many(GST_BIN(highrespipe), highsrc, highdepay, highparse, highdec, highconv, highsink, NULL);
+    gst_bin_add_many(GST_BIN(highrespipe), highsrc, highdepay, highparse, highdec,q1, tee, q2, highconv, highsink,q3, highfsink, NULL);
 
     gst_element_link_many(lowdepay, lowparse, lowdec, lowconvbefore, lowmcells, lowconvafter,  lowsink, NULL);
-    gst_element_link_many(highdepay, highparse, highdec, highconv, highsink, NULL);
+
+    //link up to tee
+    gst_element_link_many(highdepay, highparse, highdec,q1, tee, NULL);
+
+    //tee1
+    gst_element_link_many(q2, highconv, highsink, NULL);
+    //tee2
+    gst_element_link_many(q3, highfsink, NULL);
+
+    //negotiate tee -> queue pads and link
+    //get tee src pads
+    tee_src_template = gst_element_class_get_pad_template(GST_ELEMENT_GET_CLASS(tee), "src_%u");
+    tee_video_pad = gst_element_request_pad(tee, tee_src_template, NULL, NULL);
+    tee_video2_pad = gst_element_request_pad(tee, tee_src_template, NULL, NULL);
+    g_print("Recieved tee pads: '%s' and '%s'\n", gst_pad_get_name(tee_video_pad), gst_pad_get_name(tee_video2_pad));
+
+    //get queue pads
+    queue_video_pad = gst_element_get_static_pad(q2, "sink");
+    queue_video2_pad = gst_element_get_static_pad(q3, "sink");
+    g_print("recieved queue pads: '%s' , and '%s'\n", gst_pad_get_name(queue_video_pad), gst_pad_get_name(queue_video2_pad));
+
+    //link
+    if(gst_pad_link(tee_video_pad, queue_video_pad) != GST_PAD_LINK_OK ||
+    	gst_pad_link(tee_video2_pad, queue_video2_pad) != GST_PAD_LINK_OK){
+    	g_printerr("could not link tee \n");
+    	gst_object_unref(highrespipe);
+    	gst_object_unref(lowrespipe);
+    	return -1;
+    }
+
+    //assign current sink
+    curr_sink = highsink;
+
+    //set qpad
+    qpad = gst_element_get_static_pad(q2, "src");
 
     //start playing
     gst_element_set_state(lowrespipe, GST_STATE_PLAYING);
     gst_element_set_state(highrespipe, GST_STATE_PLAYING);
+
+    //init motioncount variable
+    motioncount = 0;
 
     gst_bus_add_watch(GST_ELEMENT_BUS(lowrespipe), low_bus_cb, loop);
     gst_bus_add_watch(GST_ELEMENT_BUS(highrespipe), high_bus_cb, loop);
@@ -144,8 +202,6 @@ static void pad_added_handler(GstElement *src, GstPad *new_pad, gpointer user_da
     gst_object_unref(depay_pad);    
 }
 
-
-
 static gboolean low_bus_cb (GstBus *bus, GstMessage *msg, gpointer user_data){
 	GMainLoop *loop = user_data;
 
@@ -167,10 +223,37 @@ static gboolean low_bus_cb (GstBus *bus, GstMessage *msg, gpointer user_data){
 			gst_message_parse_state_changed(msg, &old_state, &new_state, &pending_state);
 			if(GST_OBJECT_NAME(msg->src) == GST_OBJECT_NAME(lowrespipe)){
 				g_print("'%s' state changed from %s to %s. \n", GST_OBJECT_NAME(msg->src), gst_element_state_get_name(old_state), gst_element_state_get_name(new_state)); 
-			}
+			}			
 			break;
 		}
 		default:{
+			//check for motioncells messages
+			if(GST_OBJECT_NAME(msg->src) == GST_OBJECT_NAME(lowmcells)){
+				motioncount++;
+				if(motioncount % 2 == 1){
+					/*
+						Motion detected, create new sink
+						link and unblock to allow data flow						
+					*/						
+					g_print("Motion Detected\n");
+					gst_pad_remove_probe(qpad, queue_probe);
+					gst_bin_remove(GST_BIN(highrespipe), curr_sink);
+					curr_sink = gst_element_factory_make("xvimagesink", NULL);
+					gst_bin_add(GST_BIN(highrespipe), curr_sink);
+					g_print("linking new sink\n");
+					if(!gst_element_link_many(highconv, curr_sink, NULL)){
+						g_printerr("Could not link new sink\n");
+						g_main_loop_quit(loop);
+						break;
+					}
+					gst_element_set_state(curr_sink, GST_STATE_PLAYING);
+
+				}else{
+					//Motin stopped, block data flow
+					g_print("Motion Stopped\n");
+					queue_probe = gst_pad_add_probe(qpad, GST_PAD_PROBE_TYPE_BLOCK_DOWNSTREAM, queue_data_probe_cb, user_data, NULL);
+				}
+			}
 			break;
 		}
 	}
@@ -179,6 +262,9 @@ static gboolean low_bus_cb (GstBus *bus, GstMessage *msg, gpointer user_data){
 
 static gboolean high_bus_cb (GstBus *bus, GstMessage *msg, gpointer user_data){
 	GMainLoop *loop = user_data;
+	
+
+	
 
 	//parse bus messages
 	switch(GST_MESSAGE_TYPE(msg)){
@@ -196,8 +282,12 @@ static gboolean high_bus_cb (GstBus *bus, GstMessage *msg, gpointer user_data){
 		case GST_MESSAGE_STATE_CHANGED:{
 			GstState old_state, pending_state, new_state;
 			gst_message_parse_state_changed(msg, &old_state, &new_state, &pending_state);
-			if(GST_OBJECT_NAME(msg->src) == GST_OBJECT_NAME(lowrespipe)){
+			if(GST_OBJECT_NAME(msg->src) == GST_OBJECT_NAME(highrespipe)){
 				g_print("'%s' state changed from %s to %s. \n", GST_OBJECT_NAME(msg->src), gst_element_state_get_name(old_state), gst_element_state_get_name(new_state)); 
+				if(new_state == GST_STATE_PLAYING && motioncount == 0){
+					g_print("blocking sink\n");
+					queue_probe = gst_pad_add_probe(qpad, GST_PAD_PROBE_TYPE_BLOCK_DOWNSTREAM, queue_data_probe_cb, user_data, NULL);
+				}
 			}
 			break;
 		}
@@ -207,4 +297,27 @@ static gboolean high_bus_cb (GstBus *bus, GstMessage *msg, gpointer user_data){
 	}
 	return TRUE;
 }
+
+static GstPadProbeReturn queue_data_probe_cb(GstPad *pad, GstPadProbeInfo *info, gpointer user_data){
+	GstPad *sinkpad;
+	GstState state;
+
+	//get state of current sink
+	gst_element_get_state(curr_sink, &state, NULL, GST_CLOCK_TIME_NONE);
+	if(state == GST_STATE_PLAYING){
+		sinkpad = gst_element_get_static_pad(curr_sink, "sink");
+		//send eos to element about to be removed & set to null
+		gst_pad_send_event(sinkpad, gst_event_new_eos());
+		gst_element_set_state(curr_sink, GST_STATE_NULL);
+	}
+	//drop the data
+	return GST_PAD_PROBE_DROP;
+}
+
+
+
+
+
+
+
 
