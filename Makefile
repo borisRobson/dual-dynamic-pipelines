@@ -13,11 +13,3 @@ make:
 	export PKG_CONFIG_PATH=$(PKG_CONF_PATH)	
 	gcc -Wall $(FILENAME) -o $(OBJNAME) `pkg-config --cflags --libs gstreamer-1.0`
 
-make_rel:
-	export PKG_CONFIG_PATH=$(PKG_CONF_PATH)	
-	gcc -Wall $(FILENAME) -o $(OBJNAME) `pkg-config --cflags --libs gstreamer-1.0`
-
-make_dbg:
-	export PKG_CONFIG_PATH=$(PKG_CONF_PATH)
-	gcc -g -Wall $(FILENAME) -o $(OBJNAME) `pkg-config --cflags --libs gstreamer-1.0`
-
